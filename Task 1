@@ -1,0 +1,203 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
+from sklearn.model_selection import GridSearchCV
+import shap
+import lime
+import lime.lime_tabular
+from imblearn.over_sampling import SMOTE
+np.random.seed(42)
+import warnings
+warnings.filterwarnings('ignore')
+url = "https://raw.githubusercontent.com/IBM/employee-attrition-aif360/master/data/emp_attrition.csv"
+df = pd.read_csv(url)
+df['Attrition'] = df['Attrition'].apply(lambda x: 1 if x == 'Yes' else 0)
+df = df.drop(['EmployeeCount', 'EmployeeNumber', 'Over18', 'StandardHours'], axis=1)
+plt.figure(figsize=(15, 8))
+sns.countplot(data=df, x='Age', hue='Attrition')
+plt.title('Age Distribution by Attrition Status')
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+numerical_cols = df.select_dtypes(include=['int64', 'float64']).columns
+plt.figure(figsize=(15, 10))
+sns.heatmap(df[numerical_cols].corr(), annot=True, fmt=".2f", cmap='coolwarm')
+plt.title('Correlation Matrix of Numerical Features')
+plt.show()
+plt.figure(figsize=(10, 6))
+df.groupby('Department')['Attrition'].mean().sort_values().plot(kind='bar')
+plt.title('Attrition Rate by Department')
+plt.ylabel('Attrition Rate')
+plt.show()
+X = df.drop('Attrition', axis=1)
+y = df['Attrition']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, stratify=y, random_state=42)
+categorical_features = X.select_dtypes(include=['object']).columns
+numerical_features = X.select_dtypes(include=['int64', 'float64']).columns
+preprocessor = ColumnTransformer(
+    transformers=[
+        ('num', StandardScaler(), numerical_features),
+        ('cat', OneHotEncoder(handle_unknown='ignore'), categorical_features)
+    ])
+smote = SMOTE(random_state=42)
+rf_pipeline = Pipeline([
+    ('preprocessor', preprocessor),
+    ('classifier', RandomForestClassifier(random_state=42))
+])
+param_grid_rf = {
+    'classifier__n_estimators': [100, 200],
+    'classifier__max_depth': [None, 10, 20],
+    'classifier__min_samples_split': [2, 5]
+}
+
+grid_search_rf = GridSearchCV(rf_pipeline, param_grid_rf, cv=5, scoring='roc_auc', n_jobs=-1)
+grid_search_rf.fit(X_train, y_train)
+best_rf = grid_search_rf.best_estimator_
+lr_pipeline = Pipeline([
+    ('preprocessor', preprocessor),
+    ('classifier', LogisticRegression(max_iter=1000, random_state=42))
+])
+
+param_grid_lr = {
+    'classifier__C': [0.1, 1, 10],
+    'classifier__penalty': ['l2']
+}
+
+grid_search_lr = GridSearchCV(lr_pipeline, param_grid_lr, cv=5, scoring='roc_auc', n_jobs=-1)
+grid_search_lr.fit(X_train, y_train)
+best_lr = grid_search_lr.best_estimator_
+def evaluate_model(model, X_test, y_test):
+    y_pred = model.predict(X_test)
+    y_proba = model.predict_proba(X_test)[:, 1]
+    
+    print("Classification Report:")
+    print(classification_report(y_test, y_pred))
+    
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_test, y_pred))
+    
+    print(f"ROC AUC Score: {roc_auc_score(y_test, y_proba):.4f}")
+    
+    return y_proba
+
+print("Random Forest Performance:")
+rf_proba = evaluate_model(best_rf, X_test, y_test)
+
+print("\nLogistic Regression Performance:")
+lr_proba = evaluate_model(best_lr, X_test, y_test)
+preprocessed_train = preprocessor.fit_transform(X_train)
+if hasattr(preprocessed_train, 'toarray'): 
+    preprocessed_train = preprocessed_train.toarray()
+
+feature_names = (list(numerical_features) + 
+                 list(preprocessor.named_transformers_['cat'].get_feature_names_out(categorical_features)))
+rf_explainer = shap.TreeExplainer(best_rf.named_steps['classifier'])
+rf_shap_values = rf_explainer.shap_values(preprocessed_train)
+
+plt.figure(figsize=(12, 8))
+shap.summary_plot(rf_shap_values[1], preprocessed_train, feature_names=feature_names, plot_type="bar")
+plt.title('Random Forest Feature Importance (SHAP)')
+plt.tight_layout()
+plt.show()
+sample_indices = np.random.choice(preprocessed_train.shape[0], 100, replace=False)
+sample_data = preprocessed_train[sample_indices]
+
+lr_explainer = shap.KernelExplainer(best_lr.named_steps['classifier'].predict_proba, sample_data)
+lr_shap_values = lr_explainer.shap_values(sample_data)
+
+plt.figure(figsize=(12, 8))
+shap.summary_plot(lr_shap_values[1], sample_data, feature_names=feature_names, plot_type="bar")
+plt.title('Logistic Regression Feature Importance (SHAP)')
+plt.tight_layout()
+plt.show()
+categorical_names = {i: list(X[categorical_features[i]].unique()) 
+                    for i in range(len(categorical_features))}
+
+lime_explainer = lime.lime_tabular.LimeTabularExplainer(
+    preprocessed_train,
+    feature_names=feature_names,
+    class_names=['Stay', 'Leave'],
+    categorical_features=[i for i, name in enumerate(feature_names) if name.startswith('cat')],
+    categorical_names=categorical_names,
+    verbose=True,
+    mode='classification'
+)
+instance_idx = np.random.randint(0, len(X_test))
+instance = preprocessor.transform(X_test.iloc[[instance_idx]])
+rf_exp = lime_explainer.explain_instance(
+    instance[0], 
+    best_rf.predict_proba, 
+    num_features=10
+)
+
+print(f"LIME Explanation for Random Forest (Instance {instance_idx}):")
+rf_exp.show_in_notebook()
+def generate_insights(model, preprocessor, X_train):
+    feature_names = (list(numerical_features) + 
+                     list(preprocessor.named_transformers_['cat'].get_feature_names_out(categorical_features)))
+    if isinstance(model.named_steps['classifier'], RandomForestClassifier):
+        importances = model.named_steps['classifier'].feature_importances_
+    else:  
+        importances = np.abs(model.named_steps['classifier'].coef_[0])
+    importance_df = pd.DataFrame({
+        'Feature': feature_names,
+        'Importance': importances
+    }).sort_values('Importance', ascending=False)
+    actionable_features = importance_df[
+        ~importance_df['Feature'].str.startswith('cat__') &
+        importance_df['Feature'].isin(['MonthlyIncome', 'Age', 'YearsAtCompany', 
+                                      'TotalWorkingYears', 'JobSatisfaction',
+                                      'WorkLifeBalance', 'EnvironmentSatisfaction',
+                                      'JobInvolvement', 'OverTime'])
+    ]
+    
+    insights = []
+    
+    for feature in actionable_features['Feature'].head(5):
+        temp_df = X_train.copy()
+        temp_df['Attrition'] = y_train
+        if feature in numerical_features:
+            high_risk = temp_df.groupby(pd.qcut(temp_df[feature], q=5))['Attrition'].mean().idxmax()
+            low_risk = temp_df.groupby(pd.qcut(temp_df[feature], q=5))['Attrition'].mean().idxmin()
+            insight = f"Employees with {feature} in range {high_risk} have higher attrition risk than those in {low_risk}."
+        else:
+            orig_feature = feature.split('_')[1] if 'cat__' in feature else feature
+            if orig_feature in categorical_features:
+                high_risk = temp_df.groupby(orig_feature)['Attrition'].mean().idxmax()
+                insight = f"Employees with {orig_feature} = '{high_risk}' have higher attrition risk."
+        
+        insights.append(insight)
+    
+    return insights
+
+print("\nActionable Insights from Random Forest Model:")
+rf_insights = generate_insights(best_rf, preprocessor, X_train)
+for i, insight in enumerate(rf_insights, 1):
+    print(f"{i}. {insight}")
+
+print("\nActionable Insights from Logistic Regression Model:")
+lr_insights = generate_insights(best_lr, preprocessor, X_train)
+for i, insight in enumerate(lr_insights, 1):
+    print(f"{i}. {insight}")
+print("\nRecommended Retention Strategies Based on Analysis:")
+strategies = [
+    "1. Focus on improving job satisfaction through regular feedback sessions and career development opportunities.",
+    "2. Address work-life balance concerns by offering flexible work arrangements where possible.",
+    "3. Review compensation packages, especially for employees with lower monthly incomes.",
+    "4. Implement mentorship programs for younger employees and those with fewer years at the company.",
+    "5. Monitor overtime hours and consider redistributing workloads to prevent burnout.",
+    "6. Conduct stay interviews with high-risk employees to understand their concerns.",
+    "7. Enhance employee engagement through team-building activities and recognition programs.",
+    "8. Provide clear career progression paths to retain ambitious employees."
+]
+
+for strategy in strategies:
+    print(strategy)
