@@ -1,0 +1,68 @@
+import re
+import nltk
+from collections import defaultdict
+from heapq import nlargest
+try:
+    nltk.data.find('tokenizers/punkt')
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    try:
+        nltk.download('punkt')
+        nltk.download('stopwords')
+    except:
+        print("NLTK data download failed - using fallback tokenizer")
+        pass
+
+class SimpleSummarizer:
+    def __init__(self):
+        self.stop_words = set(nltk.corpus.stopwords.words('english')) if 'stopwords' in nltk.data.find('corpora') 
+else set()
+    def preprocess_text(self, text):
+        """Basic text cleaning"""
+        text = re.sub(r'\s+', ' ', text)
+        text = re.sub(r'\[.*?\]', '', text)
+        text = re.sub(r'\W', ' ', text)
+        text = re.sub(r'\d+', '', text)
+        return text.lower()
+    def summarize(self, text, ratio=0.2):
+        """Simple extractive summarization using NLTK"""
+        try:
+            sentences = nltk.sent_tokenize(text)
+        except:
+            sentences = [s.strip() for s in text.split('.') if s.strip()]
+            
+        words = nltk.word_tokenize(self.preprocess_text(text)) if 'punkt' in nltk.data.find('tokenizers') else text.split()
+        
+        word_frequencies = defaultdict(int)
+        for word in words:
+            if word not in self.stop_words and len(word) > 1:
+                word_frequencies[word] += 1
+        max_freq = max(word_frequencies.values()) if word_frequencies else 1
+        for word in word_frequencies:
+            word_frequencies[word] /= max_freq
+        sentence_scores = defaultdict(int)
+        for i, sent in enumerate(sentences):
+            for word in (nltk.word_tokenize(sent.lower()) if 'punkt' in nltk.data.find('tokenizers') else 
+sent.lower().split()):
+                if word in word_frequencies:
+                    sentence_scores[i] += word_frequencies[word]
+        num_sentences = max(1, int(len(sentences) * ratio))
+        top_sentence_indices = nlargest(num_sentences, sentence_scores, key=sentence_scores.get)
+        return ' '.join([sentences[i] for i in sorted(top_sentence_indices)])
+if __name__ == "__main__":
+    summarizer = SimpleSummarizer()
+    sample_text = """
+    Artificial intelligence (AI) is transforming industries across the globe. 
+    From healthcare to finance, AI applications are enabling breakthroughs that were 
+    previously unimaginable. In healthcare, AI is being used to diagnose diseases a
+    more accurately and develop personalized treatment plans. Machine learning 
+    algorithms can analyze medical images with precision surpassing human experts.
+    In the financial sector, AI powers fraud detection systems that save billions 
+    annually. Algorithmic trading systems make split-second decisions that affect 
+    global markets. Natural language processing enables chatbots to handle customer 
+    service inquiries with increasing sophistication.
+    """
+    print("=== Original Text ===")
+    print(sample_text)
+    print("\n=== Summary ===")
+    print(summarizer.summarize(sample_text))
