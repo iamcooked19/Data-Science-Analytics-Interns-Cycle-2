@@ -1,0 +1,160 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.svm import SVC
+from sklearn.neural_network import MLPClassifier
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, roc_curve, f1_score
+import warnings
+warnings.filterwarnings('ignore')
+def install_package(package):
+    import subprocess
+    import sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package, "--quiet"])
+
+try:
+    import xgboost
+except ImportError:
+    install_package("xgboost")
+    import xgboost
+def load_dataset(dataset_type='diabetes'):
+    try:
+        if dataset_type == 'diabetes':
+            url = 'https://raw.githubusercontent.com/plotly/datasets/master/diabetes.csv'
+            df = pd.read_csv(url)
+            target = 'Outcome'
+        elif dataset_type == 'heart':
+            url = 'https://archive.ics.uci.edu/ml/machine-learning-databases/heart-
+disease/processed.cleveland.data'
+            df = pd.read_csv(url, header=None)
+            columns = ['age', 'sex', 'cp', 'trestbps', 'chol', 'fbs', 'restecg', 
+                      'thalach', 'exang', 'oldpeak', 'slope', 'ca', 'thal', 'target']
+            df.columns = columns
+            df['target'] = df['target'].apply(lambda x: 1 if x > 0 else 0)
+            target = 'target'
+        return df, target
+    except Exception as e:
+        print(f"Error loading dataset: {e}")
+        return None, None
+def perform_eda(df, target):
+    print("\n=== Exploratory Data Analysis ===")
+    print(f"\nDataset shape: {df.shape}")
+    print("\nFirst 5 rows:")
+    print(df.head())
+    print("\nMissing values:")
+    print(df.isnull().sum())
+    print("\nTarget distribution:")
+    print(df[target].value_counts(normalize=True))
+    plt.figure(figsize=(12, 8))
+    sns.heatmap(df.corr(), annot=True, fmt=".2f", cmap='coolwarm')
+    plt.title('Feature Correlation Matrix')
+    plt.show()
+    num_cols = df.select_dtypes(include=['int64', 'float64']).columns
+    df[num_cols].hist(figsize=(15, 10))
+    plt.tight_layout()
+    plt.show()
+def preprocess_data(df, target):
+    df.replace('?', np.nan, inplace=True)
+    df = df.apply(lambda x: x.fillna(x.median()) if x.dtype == 'float64' else x.fillna(x.mode()[0]))
+    X = df.drop(target, axis=1)
+    y = df[target]
+    selector = SelectKBest(f_classif, k=8)
+    X_selected = selector.fit_transform(X, y)
+    selected_features = X.columns[selector.get_support()]
+    print(f"\nSelected features: {list(selected_features)}")
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_selected)
+    return X_scaled, y, selected_features
+def train_and_evaluate(X, y):
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+    models = {
+        "Gradient Boosting": GradientBoostingClassifier(random_state=42),
+        "SVM": SVC(probability=True, random_state=42),
+        "Neural Network": MLPClassifier(hidden_layer_sizes=(50,), max_iter=1000, random_state=42),
+        "XGBoost": xgboost.XGBClassifier(random_state=42)
+    }
+    results = {}
+    for name, model in models.items():
+        print(f"\n=== Training {name} ===")
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        y_proba = model.predict_proba(X_test)[:, 1]
+        f1 = f1_score(y_test, y_pred)
+        roc_auc = roc_auc_score(y_test, y_proba)
+        print(classification_report(y_test, y_pred))
+        print(f"F1 Score: {f1:.4f}")
+        print(f"ROC AUC: {roc_auc:.4f}"
+        fpr, tpr, _ = roc_curve(y_test, y_proba)
+        plt.plot(fpr, tpr, label=f'{name} (AUC = {roc_auc:.2f})')
+        results[name] = {
+            'model': model,
+            'f1': f1,
+            'roc_auc': roc_auc,
+            'feature_importances': get_feature_importances(model, name)
+        }
+    plt.plot([0, 1], [0, 1], 'k--')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('ROC Curves Comparison')
+    plt.legend()
+    plt.show()
+    
+    return results
+
+def get_feature_importances(model, model_name):
+    try:
+        if model_name == "Neural Network":
+            weights = np.abs(model.coefs_[0])
+            return np.mean(weights, axis=1)
+        elif model_name == "SVM":
+            return np.abs(model.coef_).mean(axis=0)
+        else:
+            return model.feature_importances_
+    except:
+        return None
+def generate_insights(results, selected_features):
+    best_model_name = max(results.items(), key=lambda x: x[1]['roc_auc'])[0]
+    best_model = results[best_model_name]['model']
+    
+    print("\n=== Actionable Insights ===")
+    print(f"Best performing model: {best_model_name}")
+    print(f"ROC AUC: {results[best_model_name]['roc_auc']:.4f}")
+    print(f"F1 Score: {results[best_model_name]['f1']:.4f}")
+    
+    if results[best_model_name]['feature_importances'] is not None:
+        print("\nFeature Importances:")
+        importances = results[best_model_name]['feature_importances']
+        for feature, importance in zip(selected_features, importances):
+            print(f"{feature}: {importance:.4f}")
+    
+    print("\nRecommendations for Healthcare Professionals:")
+    print("1. Focus on top risk factors identified by the model for early screening")
+    print("2. Implement regular monitoring for patients with high-risk profiles")
+    print("3. Use model predictions to prioritize preventive care interventions")
+    print("4. Combine model insights with clinical expertise for diagnosis")
+    print("5. Continuously validate model performance with new patient data")
+def main():
+    print("Disease Diagnosis Prediction System")
+    print("Choose dataset:")
+    print("1. Diabetes")
+    print("2. Heart Disease")
+    choice = input("Enter choice (1 or 2): ")
+    
+    dataset_type = 'diabetes' if choice == '1' else 'heart'
+    df, target = load_dataset(dataset_type)
+    
+    if df is None:
+        print("Failed to load dataset. Please check your internet connection.")
+        return
+    
+    perform_eda(df, target)
+    X, y, selected_features = preprocess_data(df, target)
+    results = train_and_evaluate(X, y)
+    generate_insights(results, selected_features)
+
+if __name__ == "__main__":
+    main()
