@@ -1,0 +1,130 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import classification_report, confusion_matrix, precision_score, recall_score, f1_score,
+ roc_auc_score, accuracy_score
+from imblearn.over_sampling import SMOTE
+from lightgbm import LGBMClassifier
+from sklearn.ensemble import RandomForestClassifier
+import warnings
+warnings.filterwarnings('ignore')
+
+print("Loading German Credit dataset from OpenML...")
+try:
+    from sklearn.datasets import fetch_openml
+    data = fetch_openml(name='credit-g', version=1, as_frame=True)
+    df = data.frame
+    
+    df['default'] = df['class'].map({'good': 0, 'bad': 1})
+    df = df.drop(columns=['class'])
+    
+    print("Dataset loaded successfully with shape:", df.shape)
+    print("Target distribution:\n", df['default'].value_counts())
+except Exception as e:
+    print(f"Failed to load dataset: {str(e)}")
+    exit()
+
+print("\nPreprocessing data...")
+
+
+y = df['default']
+X = df.drop(columns=['default'])
+
+categorical_cols = X.select_dtypes(include=['object', 'category']).columns
+if len(categorical_cols) > 0:
+    X = pd.get_dummies(X, columns=categorical_cols, drop_first=True)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
+
+
+numerical_cols = X.select_dtypes(include=['int64', 'float64']).columns
+scaler = StandardScaler()
+X_train[numerical_cols] = scaler.fit_transform(X_train[numerical_cols])
+X_test[numerical_cols] = scaler.transform(X_test[numerical_cols])
+
+
+smote = SMOTE(random_state=42)
+X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
+
+
+def train_evaluate_model(model, X_train, y_train, X_test, y_test, model_name):
+    print(f"\nTraining {model_name}...")
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1]
+    
+    
+    metrics = {
+        'Accuracy': accuracy_score(y_test, y_pred),
+        'Precision': precision_score(y_test, y_pred),
+        'Recall': recall_score(y_test, y_pred),
+        'F1 Score': f1_score(y_test, y_pred),
+        'ROC AUC': roc_auc_score(y_test, y_prob)
+    }
+    
+    
+    print(f"\n{model_name} Performance:")
+    print(classification_report(y_test, y_pred))
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_test, y_pred))
+    
+   
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    sns.heatmap(confusion_matrix(y_test, y_pred), annot=True, fmt='d', cmap='Blues', ax=ax1)
+    ax1.set_title('Confusion Matrix')
+    
+    ax2.hist(y_prob[y_test==0], bins=30, alpha=0.5, label='Good Credit')
+    ax2.hist(y_prob[y_test==1], bins=30, alpha=0.5, label='Bad Credit')
+    ax2.set_title('Predicted Probabilities')
+    ax2.legend()
+    plt.tight_layout()
+    plt.show()
+    
+    return metrics
+
+
+print("\nTraining models...")
+models = {
+    'LightGBM': LGBMClassifier(random_state=42, verbose=-1),
+    'Random Forest': RandomForestClassifier(random_state=42)
+}
+
+results = []
+for name, model in models.items():
+    try:
+        results.append({
+            'Model': name,
+            **train_evaluate_model(model, X_train_res, y_train_res, X_test, y_test, name)
+        })
+    except Exception as e:
+        print(f"Error with {name}: {str(e)}")
+
+
+if results:
+    print("\nModel Comparison:")
+    results_df = pd.DataFrame(results)
+    print(results_df.round(4))
+    
+   
+    if 'LightGBM' in results_df['Model'].values:
+        importance = pd.DataFrame({
+            'Feature': X.columns,
+            'Importance': models['LightGBM'].feature_importances_
+        }).sort_values('Importance', ascending=False)
+        
+        plt.figure(figsize=(10, 6))
+        sns.barplot(x='Importance', y='Feature', data=importance.head(20))
+        plt.title('Top 20 Important Features')
+        plt.tight_layout()
+        plt.show()
+
+
+print("\nPractical Recommendations:")
+print("1. The model with highest F1 score provides the best balance")
+print("2. Key risk factors: credit history, loan duration, account status")
+print("3. Use probability thresholds to adjust risk tolerance")
+print("4. Monitor model performance quarterly")
+print("5. Combine with manual review for borderline cases")
